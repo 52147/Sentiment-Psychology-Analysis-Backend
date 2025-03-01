@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+transformers
+torch
+sentencepiece
+numpy
+scikit-learn
+pandas
+openai
+textblob

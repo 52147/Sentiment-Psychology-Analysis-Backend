@@ -1,0 +1,8 @@
+.env
+# 其他常見忽略項目
+__pycache__/
+*.pyc
+*.pyo
+*.swp
+.DS_Store
+.env
