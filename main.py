@@ -1,4 +1,3 @@
-# main.py
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -13,6 +12,10 @@ import os
 import json  # ✅ 確保導入 JSON
 import requests 
 from dotenv import load_dotenv  # Install with: pip install python-dotenv
+
+
+# 🔥 關閉 HuggingFace tokenizer 並行處理
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 load_dotenv()  # ✅ Load environment variables from .env file
 
@@ -62,8 +65,7 @@ def update_conversation(request: TextRequest):
 # ✅ 設定可選擇的 NLP 模型
 # ✅ 正確初始化 NLP pipeline，而不是存字串
 MODEL_MAPPING = {
-    "distilbert": pipeline("sentiment-analysis", model="distilbert-base-uncased"),
-    "roberta-large": pipeline("sentiment-analysis", model="tasinhoque/roberta-large-go-emotions"),
+    "roberta-large": pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-emotion"),  # ✅ 使用 Cardiff NLP 版本
     "bert-base": pipeline("sentiment-analysis", model="nlptown/bert-base-multilingual-uncased-sentiment"),
     "xlm-roberta": pipeline("sentiment-analysis", model="cardiffnlp/twitter-xlm-roberta-base-sentiment"),
     "gpt-3.5-turbo": "gpt-3.5-turbo"  # ✅ 這個用 OpenAI API 處理，不要用 pipeline()
@@ -137,14 +139,25 @@ def psychology_analysis(request: dict):
                 emotion_scores = {entry["label"]: round(entry["score"] * 100, 1) for entry in analysis}
 
                 # ✅ 轉換為 `psychology_factors` 格式
-                psychology_factors = {
-                    "Anxiety": emotion_scores.get("fear", 0) + emotion_scores.get("sadness", 0),
-                    "Confidence": max(emotion_scores.get("joy", 0), 50),  # 設定 Confidence 預設值
-                    "Overthinking": emotion_scores.get("fear", 0),
-                    "Self-Doubt": emotion_scores.get("anger", 0),
-                    "Social Avoidance": emotion_scores.get("sadness", 0) + emotion_scores.get("fear", 0),
-                    "Aggression": emotion_scores.get("anger", 0)
-                }
+                psychology_factors = {}
+                if model_name == "bert-base":
+                    psychology_factors = {
+                        "Anxiety": emotion_scores.get("1 star", 0) + emotion_scores.get("2 stars", 0),
+                        "Confidence": max(emotion_scores.get("4 stars", 0) + emotion_scores.get("5 stars", 0), 50),
+                        "Overthinking": emotion_scores.get("1 star", 0),
+                        "Self-Doubt": emotion_scores.get("2 stars", 0),
+                        "Social Avoidance": emotion_scores.get("1 star", 0),
+                        "Aggression": emotion_scores.get("1 star", 0) + emotion_scores.get("2 stars", 0)
+                    }
+                else:
+                    psychology_factors = {
+                        "Anxiety": emotion_scores.get("fear", 0) + emotion_scores.get("sadness", 0),
+                        "Confidence": max(emotion_scores.get("joy", 0), 50),  # 設定 Confidence 預設值
+                        "Overthinking": emotion_scores.get("fear", 0),
+                        "Self-Doubt": emotion_scores.get("anger", 0),
+                        "Social Avoidance": emotion_scores.get("sadness", 0) + emotion_scores.get("fear", 0),
+                        "Aggression": emotion_scores.get("anger", 0)
+                    }
 
                 # ✅ 選取主要心理狀態
                 primary_state = max(psychology_factors, key=psychology_factors.get)
@@ -244,22 +257,20 @@ def generate_next_question(state: str, history: list, deep_dive: bool = False):
     return response.choices[0].message.content.strip()
 
 class AttackRequest(BaseModel):
-    text: str  # 原始文本
-    attack_type: str = "synonym"  # 預設為 "synonym"
+    text: str
+    attack_type: str = "synonym"
+    model: str = "distilbert"  # ✅ 新增 NLP 模型選擇參數
 
 @app.post("/adversarial_attack")
 def adversarial_test(request: AttackRequest):
-    """Performs adversarial attack on the input text and analyzes its robustness."""
     try:
-        # ✅ Generate adversarial text (Attack Simulation)
         adversarial_text = generate_adversarial_text(request.text, request.attack_type)
 
-        # ✅ Analyze the original text
-        original_analysis = analyze_psychology(request.text)
-
-        # ✅ Analyze the adversarial text (only if different)
+        original_analysis = simple_psychology_analysis({"text": request.text, "model": request.model})
         adversarial_analysis = (
-            analyze_psychology(adversarial_text) if adversarial_text != request.text else original_analysis
+            simple_psychology_analysis({"text": adversarial_text, "model": request.model})
+            if adversarial_text != request.text
+            else original_analysis
         )
 
         return {
@@ -271,3 +282,108 @@ def adversarial_test(request: AttackRequest):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing adversarial attack: {str(e)}")
+    
+
+# 在 simple_psychology_analysis API 內部
+@app.post("/simple_psychology_analysis")
+def simple_psychology_analysis(request: dict):
+    model_name = request.get("model", "distilbert")
+    user_text = request.get("text", "").strip()
+
+    if not user_text:
+        raise HTTPException(status_code=400, detail="請提供有效的文本")
+
+    if model_name == "gpt-3.5-turbo":
+        prompt = f"""請分析以下文本的心理狀態，並返回 JSON 格式：
+        {{
+            "state": "主要情緒",
+            "confidence": 0-100,
+            "emotion_scores": {{
+                "Anxiety": 0-100,
+                "Confidence": 0-100,
+                "Overthinking": 0-100,
+                "Self-Doubt": 0-100,
+                "Social Avoidance": 0-100,
+                "Aggression": 0-100
+            }},
+            "psychology_factors": {{
+                "Anxiety": 0-100,
+                "Confidence": 0-100,
+                "Overthinking": 0-100,
+                "Self-Doubt": 0-100,
+                "Social Avoidance": 0-100,
+                "Aggression": 0-100
+            }}
+        }}
+        文本：{user_text}
+        """
+
+        try:
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=300
+            )
+            analysis_result = json.loads(response.choices[0].message.content)
+
+            return {
+                "state": analysis_result["state"],
+                "confidence": analysis_result["confidence"],
+                "emotion_scores": analysis_result["emotion_scores"],
+                "psychology_factors": analysis_result["psychology_factors"],
+                "model_used": "gpt-3.5-turbo"
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"GPT-3.5 Turbo Error: {str(e)}")
+
+    elif model_name in MODEL_MAPPING:
+        try:
+            nlp_pipeline = MODEL_MAPPING[model_name]
+            analysis = nlp_pipeline(user_text)
+            
+            emotion_scores = {entry["label"]: round(entry["score"] * 100, 1) for entry in analysis}
+
+            psychology_factors = {}
+            
+            if model_name == "xlm-roberta":
+                psychology_factors = {
+                    "Anxiety": emotion_scores.get("negative", 0),
+                    "Confidence": max(emotion_scores.get("positive", 0), 50),
+                    "Overthinking": emotion_scores.get("negative", 0),
+                    "Self-Doubt": emotion_scores.get("negative", 0),
+                    "Social Avoidance": emotion_scores.get("negative", 0),
+                    "Aggression": emotion_scores.get("negative", 0),
+                }
+            elif model_name == "bert-base":
+                psychology_factors = {
+                    "Anxiety": emotion_scores.get("1 star", 0) + emotion_scores.get("2 stars", 0),
+                    "Confidence": max(emotion_scores.get("4 stars", 0) + emotion_scores.get("5 stars", 0), 50),
+                    "Overthinking": emotion_scores.get("1 star", 0),
+                    "Self-Doubt": emotion_scores.get("2 stars", 0),
+                    "Social Avoidance": emotion_scores.get("1 star", 0),
+                    "Aggression": emotion_scores.get("1 star", 0) + emotion_scores.get("2 stars", 0)
+                }
+            else:
+                psychology_factors = {
+                    "Anxiety": emotion_scores.get("fear", 0) + emotion_scores.get("sadness", 0),
+                    "Confidence": max(emotion_scores.get("joy", 0), 50),
+                    "Overthinking": emotion_scores.get("fear", 0),
+                    "Self-Doubt": emotion_scores.get("anger", 0),
+                    "Social Avoidance": emotion_scores.get("sadness", 0) + emotion_scores.get("fear", 0),
+                    "Aggression": emotion_scores.get("anger", 0)
+                }
+
+            primary_state = max(psychology_factors, key=psychology_factors.get)
+
+            return {
+                "state": primary_state,
+                "confidence": psychology_factors[primary_state],
+                "emotion_scores": emotion_scores,
+                "psychology_factors": psychology_factors,
+                "model_used": model_name
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"模型執行錯誤: {str(e)}")
+
+    raise HTTPException(status_code=400, detail="請選擇有效的 NLP 模型")

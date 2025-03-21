@@ -110,3 +110,11 @@ def generate_next_question(state: str, history: list, deep_dive: bool = False):
     )
 
     return response.choices[0].message.content.strip()
+def analyze_psychology_by_model(text: str, model: str = "distilbert", history: list = []):
+    """透過 psychology_analysis API 處理"""
+    request = {
+        "text": text,
+        "model": model,
+        "history": history
+    }
+    return psychology_analysis(request)
